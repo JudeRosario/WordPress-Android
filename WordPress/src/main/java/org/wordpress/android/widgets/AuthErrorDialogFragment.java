@@ -1,26 +1,30 @@
 package org.wordpress.android.widgets;
 
-import android.app.AlertDialog;
 import android.app.Dialog;
-import android.app.DialogFragment;
 import android.content.DialogInterface;
-import android.content.Intent;
 import android.os.Bundle;
 
+import androidx.appcompat.app.AlertDialog;
+import androidx.fragment.app.DialogFragment;
+
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
 import org.wordpress.android.R;
-import org.wordpress.android.WordPress;
-import org.wordpress.android.ui.prefs.BlogPreferencesActivity;
+import org.wordpress.android.fluxc.model.SiteModel;
+import org.wordpress.android.ui.ActivityLauncher;
 
 /**
  * An alert dialog fragment for XML-RPC authentication failures
  */
 public class AuthErrorDialogFragment extends DialogFragment {
-    public static int DEFAULT_RESOURCE_ID = -1;
+    public static final int DEFAULT_RESOURCE_ID = -1;
 
     private int mMessageId = R.string.incorrect_credentials;
     private int mTitleId = R.string.connection_error;
+    private SiteModel mSite;
 
-    public void setWPComTitleMessage(int titleResourceId, int messageResourceId) {
+    public void setArgs(int titleResourceId, int messageResourceId, SiteModel site) {
+        mSite = site;
         if (titleResourceId != DEFAULT_RESOURCE_ID) {
             mTitleId = titleResourceId;
         } else {
@@ -44,16 +48,14 @@ public class AuthErrorDialogFragment extends DialogFragment {
 
     @Override
     public Dialog onCreateDialog(Bundle savedInstanceState) {
-        AlertDialog.Builder b = new AlertDialog.Builder(getActivity());
+        AlertDialog.Builder b = new MaterialAlertDialogBuilder(getActivity());
         b.setTitle(mTitleId);
         b.setMessage(mMessageId);
         b.setCancelable(true);
         b.setPositiveButton(R.string.settings, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                Intent settingsIntent = new Intent(getActivity(), BlogPreferencesActivity.class);
-                settingsIntent.putExtra("id", WordPress.getCurrentBlog().getLocalTableBlogId());
-                getActivity().startActivity(settingsIntent);
+                ActivityLauncher.viewBlogSettingsForResult(getActivity(), mSite);
             }
         });
         b.setNegativeButton(R.string.cancel, new DialogInterface.OnClickListener() {

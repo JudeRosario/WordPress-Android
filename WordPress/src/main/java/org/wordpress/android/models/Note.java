@@ -3,38 +3,44 @@
  */
 package org.wordpress.android.models;
 
-import android.text.Html;
 import android.text.Spannable;
-import android.util.Log;
+import android.text.TextUtils;
+import android.util.Base64;
 
-import com.simperium.client.BucketSchema;
-import com.simperium.client.Syncable;
-import com.simperium.util.JSONDiff;
-
-import org.apache.commons.lang.time.DateUtils;
+import org.apache.commons.lang3.time.DateUtils;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.wordpress.android.ui.notifications.utils.NotificationsUtils;
+import org.wordpress.android.fluxc.model.CommentModel;
+import org.wordpress.android.fluxc.model.CommentStatus;
+import org.wordpress.android.ui.notifications.utils.NotificationsUtilsWrapper;
+import org.wordpress.android.util.AppLog;
 import org.wordpress.android.util.DateTimeUtils;
 import org.wordpress.android.util.JSONUtils;
 import org.wordpress.android.util.StringUtils;
 
-import java.util.ArrayList;
+import java.io.UnsupportedEncodingException;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.EnumSet;
-import java.util.List;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 
-public class Note extends Syncable {
+public class Note {
     private static final String TAG = "NoteModel";
 
     // Maximum character length for a comment preview
-    static private final int MAX_COMMENT_PREVIEW_LENGTH = 200;
+    private static final int MAX_COMMENT_PREVIEW_LENGTH = 200;
 
-    private static final String NOTE_UNKNOWN_TYPE = "unknown";
-    private static final String NOTE_COMMENT_TYPE = "comment";
-    private static final String NOTE_MATCHER_TYPE = "automattcher";
-    private static final String NOTE_FOLLOW_TYPE = "follow";
+    // Note types
+    public static final String NOTE_FOLLOW_TYPE = "follow";
+    public static final String NOTE_LIKE_TYPE = "like";
+    public static final String NOTE_COMMENT_TYPE = "comment";
+    public static final String NOTE_MATCHER_TYPE = "automattcher";
+    public static final String NOTE_COMMENT_LIKE_TYPE = "comment_like";
+    public static final String NOTE_REBLOG_TYPE = "reblog";
+    public static final String NOTE_NEW_POST_TYPE = "new_post";
+    public static final String NOTE_UNKNOWN_TYPE = "unknown";
 
     // JSON action keys
     private static final String ACTION_KEY_REPLY = "replyto-comment";
@@ -44,11 +50,12 @@ public class Note extends Syncable {
 
     private JSONObject mActions;
     private JSONObject mNoteJSON;
+    private final String mKey;
 
     private final Object mSyncLock = new Object();
     private String mLocalStatus;
 
-    public static enum EnabledActions {
+    public enum EnabledActions {
         ACTION_REPLY,
         ACTION_APPROVE,
         ACTION_UNAPPROVE,
@@ -56,7 +63,7 @@ public class Note extends Syncable {
         ACTION_LIKE
     }
 
-    public static enum NoteTimeGroup {
+    public enum NoteTimeGroup {
         GROUP_TODAY,
         GROUP_YESTERDAY,
         GROUP_OLDER_TWO_DAYS,
@@ -64,36 +71,25 @@ public class Note extends Syncable {
         GROUP_OLDER_MONTH
     }
 
-    /**
-     * Create a note using JSON from Simperium
-     */
-    private Note(JSONObject noteJSON) {
+    public Note(String key, JSONObject noteJSON) {
+        mKey = key;
         mNoteJSON = noteJSON;
     }
 
-    /**
-     * Simperium method @see Diffable
-     */
-    @Override
-    public JSONObject getDiffableValue() {
-        synchronized (mSyncLock) {
-            return JSONDiff.deepCopy(mNoteJSON);
-        }
+    public Note(JSONObject noteJSON) {
+        mNoteJSON = noteJSON;
+        mKey = mNoteJSON.optString("id", "");
     }
 
-    /**
-     * Simperium method for identifying bucket object @see Diffable
-     */
-    @Override
-    public String getSimperiumKey() {
-        return getId();
+    public JSONObject getJSON() {
+        return mNoteJSON != null ? mNoteJSON : new JSONObject();
     }
 
     public String getId() {
-        return String.valueOf(queryJSON("id", 0));
+        return mKey;
     }
 
-    private String getType() {
+    public String getType() {
         return queryJSON("type", NOTE_UNKNOWN_TYPE);
     }
 
@@ -103,8 +99,8 @@ public class Note extends Syncable {
 
     public Boolean isCommentType() {
         synchronized (mSyncLock) {
-            return (isAutomattcherType() && JSONUtils.queryJSON(mNoteJSON, "meta.ids.comment", -1) != -1) ||
-                    isType(NOTE_COMMENT_TYPE);
+            return (isAutomattcherType() && JSONUtils.queryJSON(mNoteJSON, "meta.ids.comment", -1) != -1)
+                   || isType(NOTE_COMMENT_TYPE);
         }
     }
 
@@ -112,8 +108,69 @@ public class Note extends Syncable {
         return isType(NOTE_MATCHER_TYPE);
     }
 
+    public Boolean isNewPostType() {
+        return isType(NOTE_NEW_POST_TYPE);
+    }
+
     public Boolean isFollowType() {
         return isType(NOTE_FOLLOW_TYPE);
+    }
+
+    public Boolean isLikeType() {
+        return isPostLikeType() || isCommentLikeType();
+    }
+
+    public Boolean isPostLikeType() {
+        return isType(NOTE_LIKE_TYPE);
+    }
+
+    public Boolean isCommentLikeType() {
+        return isType(NOTE_COMMENT_LIKE_TYPE);
+    }
+
+    public Boolean isReblogType() {
+        return isType(NOTE_REBLOG_TYPE);
+    }
+
+    public Boolean isCommentReplyType() {
+        return isCommentType() && getParentCommentId() > 0;
+    }
+
+    // Returns true if the user has replied to this comment note
+    public Boolean isCommentWithUserReply() {
+        return isCommentType() && !TextUtils.isEmpty(getCommentSubjectNoticon());
+    }
+
+    public Boolean isUserList() {
+        return isLikeType() || isFollowType() || isReblogType();
+    }
+
+    /*
+     * does user have permission to moderate/reply/spam this comment?
+     */
+    public boolean canModerate() {
+        EnumSet<EnabledActions> enabledActions = getEnabledActions();
+        return enabledActions != null && (enabledActions.contains(EnabledActions.ACTION_APPROVE) || enabledActions
+                .contains(EnabledActions.ACTION_UNAPPROVE));
+    }
+
+    public boolean canMarkAsSpam() {
+        EnumSet<EnabledActions> enabledActions = getEnabledActions();
+        return (enabledActions != null && enabledActions.contains(EnabledActions.ACTION_SPAM));
+    }
+
+    public boolean canReply() {
+        EnumSet<EnabledActions> enabledActions = getEnabledActions();
+        return (enabledActions != null && enabledActions.contains(EnabledActions.ACTION_REPLY));
+    }
+
+    public boolean canTrash() {
+        return canModerate();
+    }
+
+    public boolean canLike() {
+        EnumSet<EnabledActions> enabledActions = getEnabledActions();
+        return (enabledActions != null && enabledActions.contains(EnabledActions.ACTION_LIKE));
     }
 
     public String getLocalStatus() {
@@ -124,7 +181,7 @@ public class Note extends Syncable {
         mLocalStatus = localStatus;
     }
 
-    private JSONObject getSubject() {
+    public JSONObject getSubject() {
         try {
             synchronized (mSyncLock) {
                 JSONArray subjectArray = mNoteJSON.getJSONArray("subject");
@@ -139,19 +196,19 @@ public class Note extends Syncable {
         return null;
     }
 
-    public Spannable getFormattedSubject() {
-        return NotificationsUtils.getSpannableContentForRanges(getSubject(), null, null);
+    public Spannable getFormattedSubject(NotificationsUtilsWrapper notificationsUtilsWrapper) {
+        return notificationsUtilsWrapper.getSpannableContentForRanges(getSubject());
     }
 
     public String getTitle() {
         return queryJSON("title", "");
     }
 
-    private String getIconURL() {
+    public String getIconURL() {
         return queryJSON("icon", "");
     }
 
-    private String getCommentSubject() {
+    public String getCommentSubject() {
         synchronized (mSyncLock) {
             JSONArray subjectArray = mNoteJSON.optJSONArray("subject");
             if (subjectArray != null) {
@@ -164,16 +221,15 @@ public class Note extends Syncable {
 
                 return commentSubject;
             }
-
         }
 
         return "";
     }
 
-    private String getCommentSubjectNoticon() {
+    public String getCommentSubjectNoticon() {
         JSONArray subjectRanges = queryJSON("subject[0].ranges", new JSONArray());
         if (subjectRanges != null) {
-            for (int i=0; i < subjectRanges.length(); i++) {
+            for (int i = 0; i < subjectRanges.length(); i++) {
                 try {
                     JSONObject rangeItem = subjectRanges.getJSONObject(i);
                     if (rangeItem.has("type") && rangeItem.optString("type").equals("noticon")) {
@@ -188,6 +244,10 @@ public class Note extends Syncable {
         return "";
     }
 
+    public long getCommentReplyId() {
+        return queryJSON("meta.ids.reply_comment", 0);
+    }
+
     /**
      * Compare note timestamp to now and return a time grouping
      */
@@ -200,12 +260,19 @@ public class Note extends Syncable {
         } else if (then.compareTo(DateUtils.addWeeks(today, -1)) < 0) {
             return NoteTimeGroup.GROUP_OLDER_WEEK;
         } else if (then.compareTo(DateUtils.addDays(today, -2)) < 0
-                || DateUtils.isSameDay(DateUtils.addDays(today, -2), then)) {
+                   || DateUtils.isSameDay(DateUtils.addDays(today, -2), then)) {
             return NoteTimeGroup.GROUP_OLDER_TWO_DAYS;
         } else if (DateUtils.isSameDay(DateUtils.addDays(today, -1), then)) {
             return NoteTimeGroup.GROUP_YESTERDAY;
         } else {
             return NoteTimeGroup.GROUP_TODAY;
+        }
+    }
+
+    public static class TimeStampComparator implements Comparator<Note> {
+        @Override
+        public int compare(Note a, Note b) {
+            return b.getTimestampString().compareTo(a.getTimestampString());
         }
     }
 
@@ -216,27 +283,27 @@ public class Note extends Syncable {
         return !isRead();
     }
 
-    Boolean isRead() {
+    private Boolean isRead() {
         return queryJSON("read", 0) == 1;
     }
 
-    public void markAsRead() {
+    public void setRead() {
         try {
-            synchronized (mSyncLock) {
-                mNoteJSON.put("read", 1);
-            }
+            mNoteJSON.putOpt("read", 1);
         } catch (JSONException e) {
-            Log.e(TAG, "Unable to update note read property", e);
-            return;
+            AppLog.e(AppLog.T.NOTIFS, "Failed to set 'read' property", e);
         }
-        save();
     }
 
     /**
      * Get the timestamp provided by the API for the note
      */
     public long getTimestamp() {
-        return DateTimeUtils.iso8601ToTimestamp(queryJSON("timestamp", ""));
+        return DateTimeUtils.timestampFromIso8601(getTimestampString());
+    }
+
+    public String getTimestampString() {
+        return queryJSON("timestamp", "");
     }
 
     public JSONArray getBody() {
@@ -250,7 +317,7 @@ public class Note extends Syncable {
     }
 
     // returns character code for notification font
-    private String getNoticonCharacter() {
+    public String getNoticonCharacter() {
         return queryJSON("noticon", "");
     }
 
@@ -263,7 +330,7 @@ public class Note extends Syncable {
                 try {
                     JSONObject bodyItem = bodyArray.getJSONObject(i);
                     if (bodyItem.has("type") && bodyItem.optString("type").equals("comment")
-                            && commentId == JSONUtils.queryJSON(bodyItem, "meta.ids.comment", 0)) {
+                        && commentId == JSONUtils.queryJSON(bodyItem, "meta.ids.comment", 0)) {
                         mActions = JSONUtils.queryJSON(bodyItem, "actions", new JSONObject());
                         break;
                     }
@@ -278,13 +345,6 @@ public class Note extends Syncable {
         }
 
         return mActions;
-    }
-
-
-    private void updateJSON(JSONObject json) {
-        synchronized (mSyncLock) {
-            mNoteJSON = json;
-        }
     }
 
     /*
@@ -328,7 +388,6 @@ public class Note extends Syncable {
         return queryJSON("meta.ids.comment", 0);
     }
 
-
     public long getParentCommentId() {
         return queryJSON("meta.ids.parent_comment", 0);
     }
@@ -338,7 +397,9 @@ public class Note extends Syncable {
      */
     private <U> U queryJSON(String query, U defaultObject) {
         synchronized (mSyncLock) {
-            if (mNoteJSON == null) return defaultObject;
+            if (mNoteJSON == null) {
+                return defaultObject;
+            }
             return JSONUtils.queryJSON(mNoteJSON, query, defaultObject);
         }
     }
@@ -346,25 +407,26 @@ public class Note extends Syncable {
     /**
      * Constructs a new Comment object based off of data in a Note
      */
-    public Comment buildComment() {
-        return new Comment(
-                getPostId(),
-                getCommentId(),
-                getCommentAuthorName(),
-                DateTimeUtils.timestampToIso8601Str(getTimestamp()),
-                getCommentText(),
-                CommentStatus.toString(getCommentStatus()),
-                "", // post title is unavailable in note model
-                getCommentAuthorUrl(),
-                "", // user email is unavailable in note model
-                getIconURL()
-        );
+    public CommentModel buildComment() {
+        CommentModel comment = new CommentModel();
+        comment.setRemotePostId(getPostId());
+        comment.setRemoteCommentId(getCommentId());
+        comment.setAuthorName(getCommentAuthorName());
+        comment.setDatePublished(DateTimeUtils.iso8601FromTimestamp(getTimestamp()));
+        comment.setContent(getCommentText());
+        comment.setStatus(getCommentStatus().toString());
+        comment.setAuthorUrl(getCommentAuthorUrl());
+        comment.setPostTitle(getTitle()); // unavailable in note model
+        comment.setAuthorEmail(""); // unavailable in note model
+        comment.setAuthorProfileImageUrl(getIconURL());
+        comment.setILike(hasLikedComment());
+        return comment;
     }
 
     public String getCommentAuthorName() {
         JSONArray bodyArray = getBody();
 
-        for (int i=0; i < bodyArray.length(); i++) {
+        for (int i = 0; i < bodyArray.length(); i++) {
             try {
                 JSONObject bodyItem = bodyArray.getJSONObject(i);
                 if (bodyItem.has("type") && bodyItem.optString("type").equals("user")) {
@@ -385,7 +447,7 @@ public class Note extends Syncable {
     private String getCommentAuthorUrl() {
         JSONArray bodyArray = getBody();
 
-        for (int i=0; i < bodyArray.length(); i++) {
+        for (int i = 0; i < bodyArray.length(); i++) {
             try {
                 JSONObject bodyItem = bodyArray.getJSONObject(i);
                 if (bodyItem.has("type") && bodyItem.optString("type").equals("user")) {
@@ -408,12 +470,16 @@ public class Note extends Syncable {
             return CommentStatus.UNAPPROVED;
         }
 
-        return CommentStatus.UNKNOWN;
+        return CommentStatus.ALL;
     }
 
     public boolean hasLikedComment() {
         JSONObject jsonActions = getCommentActions();
         return !(jsonActions == null || jsonActions.length() == 0) && jsonActions.optBoolean(ACTION_KEY_LIKE);
+    }
+
+    public String getUrl() {
+        return queryJSON("url", "");
     }
 
     public JSONArray getHeader() {
@@ -422,97 +488,64 @@ public class Note extends Syncable {
         }
     }
 
-    /**
-     * Represents a user replying to a note.
-     */
-    public static class Reply {
-        private final String mContent;
-        private final String mRestPath;
-
-        Reply(String restPath, String content) {
-            mRestPath = restPath;
-            mContent = content;
+    // this method is used to compare two Notes: as it's potentially a very processing intensive operation,
+    // we're only comparing the note id, timestamp, and raw JSON length, which is accurate enough for
+    // the purpose of checking if the local Note is any different from a remote note.
+    public boolean equalsTimeAndLength(Note note) {
+        if (note == null) {
+            return false;
         }
 
-        public String getContent() {
-            return mContent;
+        if (this.getTimestampString().equalsIgnoreCase(note.getTimestampString())
+            && this.getJSON().length() == note.getJSON().length()) {
+            return true;
         }
-
-        public String getRestPath() {
-            return mRestPath;
-        }
+        return false;
     }
 
-    public Reply buildReply(String content) {
-        String restPath;
-        if (this.isCommentType()) {
-            restPath = String.format("sites/%d/comments/%d", getSiteId(), getCommentId());
-        } else {
-            restPath = String.format("sites/%d/posts/%d", getSiteId(), getPostId());
+    public static synchronized Note buildFromBase64EncodedData(String noteId, String base64FullNoteData) {
+        Note note = null;
+
+        if (base64FullNoteData == null) {
+            return null;
         }
 
-        return new Reply(String.format("%s/replies/new", restPath), content);
-    }
+        byte[] b64DecodedPayload = Base64.decode(base64FullNoteData, Base64.DEFAULT);
 
-    /**
-     * Simperium Schema
-     */
-    public static class Schema extends BucketSchema<Note> {
+        // Decompress the payload
+        Inflater decompresser = new Inflater();
+        decompresser.setInput(b64DecodedPayload, 0, b64DecodedPayload.length);
+        byte[] result = new byte[4096]; // max length an Android PN payload can have
+        int resultLength = 0;
+        try {
+            resultLength = decompresser.inflate(result);
+            decompresser.end();
+        } catch (DataFormatException e) {
+            AppLog.e(AppLog.T.NOTIFS, "Can't decompress the PN BlockListPayload. It could be > 4K", e);
+        }
 
-        static public final String NAME = "note20";
-        static public final String TIMESTAMP_INDEX = "timestamp";
-        static public final String SUBJECT_INDEX = "subject";
-        static public final String SNIPPET_INDEX = "snippet";
-        static public final String UNREAD_INDEX = "unread";
-        static public final String NOTICON_INDEX = "noticon";
-        static public final String ICON_URL_INDEX = "icon";
-        static public final String IS_UNAPPROVED_INDEX = "unapproved";
-        static public final String COMMENT_SUBJECT_NOTICON = "comment_subject_noticon";
-        static public final String LOCAL_STATUS = "local_status";
+        String out = null;
+        try {
+            out = new String(result, 0, resultLength, "UTF8");
+        } catch (UnsupportedEncodingException e) {
+            AppLog.e(AppLog.T.NOTIFS, "Notification data contains non UTF8 characters.", e);
+        }
 
-        private static final Indexer<Note> sNoteIndexer = new Indexer<Note>() {
-
-            @Override
-            public List<Index> index(Note note) {
-                List<Index> indexes = new ArrayList<Index>();
-                try {
-                    indexes.add(new Index(TIMESTAMP_INDEX, note.getTimestamp()));
-                } catch (NumberFormatException e) {
-                    // note will not have an indexed timestamp so it will
-                    // show up at the end of a query sorting by timestamp
-                    android.util.Log.e("WordPress", "Failed to index timestamp", e);
+        if (out != null) {
+            try {
+                JSONObject jsonObject = new JSONObject(out);
+                if (jsonObject.has("notes")) {
+                    JSONArray jsonArray = jsonObject.getJSONArray("notes");
+                    if (jsonArray != null && jsonArray.length() == 1) {
+                        jsonObject = jsonArray.getJSONObject(0);
+                    }
                 }
-
-                indexes.add(new Index(SUBJECT_INDEX, Html.toHtml(note.getFormattedSubject())));
-                indexes.add(new Index(SNIPPET_INDEX, note.getCommentSubject()));
-                indexes.add(new Index(UNREAD_INDEX, note.isUnread()));
-                indexes.add(new Index(NOTICON_INDEX, note.getNoticonCharacter()));
-                indexes.add(new Index(ICON_URL_INDEX, note.getIconURL()));
-                indexes.add(new Index(IS_UNAPPROVED_INDEX, note.getCommentStatus() == CommentStatus.UNAPPROVED));
-                indexes.add(new Index(COMMENT_SUBJECT_NOTICON, note.getCommentSubjectNoticon()));
-                indexes.add(new Index(LOCAL_STATUS, note.getLocalStatus()));
-
-                return indexes;
+                note = new Note(noteId, jsonObject);
+            } catch (JSONException e) {
+                AppLog.e(AppLog.T.NOTIFS, "Can't parse the Note JSON received in the PN", e);
             }
-
-        };
-
-        public Schema() {
-            addIndex(sNoteIndexer);
         }
 
-        @Override
-        public String getRemoteName() {
-            return NAME;
-        }
-
-        @Override
-        public Note build(String key, JSONObject properties) {
-            return new Note(properties);
-        }
-
-        public void update(Note note, JSONObject properties) {
-            note.updateJSON(properties);
-        }
+        return note;
     }
 }

@@ -5,11 +5,10 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
-import android.support.v7.app.ActionBar;
-import android.support.v7.app.ActionBarActivity;
 import android.text.Html;
 import android.view.LayoutInflater;
 import android.view.Menu;
+import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
@@ -17,31 +16,35 @@ import android.widget.BaseAdapter;
 import android.widget.ListView;
 import android.widget.TextView;
 
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.widget.Toolbar;
+
 import org.wordpress.android.R;
 import org.wordpress.android.util.AppLog;
 import org.wordpress.android.util.AppLog.T;
 import org.wordpress.android.util.ToastUtils;
 
 import java.util.ArrayList;
+import java.util.Locale;
+
+import static java.lang.String.format;
 
 /**
  * views the activity log (see utils/AppLog.java)
  */
-public class AppLogViewerActivity extends ActionBarActivity {
-    private static final int ID_SHARE = 1;
-    private static final int ID_COPY_TO_CLIPBOARD = 2;
-
+public class AppLogViewerActivity extends LocaleAwareActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.logviewer_activity);
 
+        Toolbar toolbar = findViewById(R.id.toolbar_main);
+        setSupportActionBar(toolbar);
         ActionBar actionBar = getSupportActionBar();
         if (actionBar != null) {
-            actionBar.setElevation(0.0f);
-            actionBar.setNavigationMode(ActionBar.NAVIGATION_MODE_STANDARD);
             actionBar.setDisplayShowTitleEnabled(true);
             actionBar.setDisplayHomeAsUpEnabled(true);
+            actionBar.setTitle(R.string.reader_title_applog);
         }
 
         final ListView listView = (ListView) findViewById(android.R.id.list);
@@ -87,24 +90,24 @@ public class AppLogViewerActivity extends ActionBarActivity {
             // line numbers shown here won't match the line numbers when the log is shared
             int lineNum = position - AppLog.HEADER_LINE_COUNT + 1;
             if (lineNum > 0) {
-                holder.txtLineNumber.setText(String.format("%02d", lineNum));
-                holder.txtLineNumber.setVisibility(View.VISIBLE);
+                holder.mTxtLineNumber.setText(format(Locale.US, "%02d", lineNum));
+                holder.mTxtLineNumber.setVisibility(View.VISIBLE);
             } else {
-                holder.txtLineNumber.setVisibility(View.GONE);
+                holder.mTxtLineNumber.setVisibility(View.GONE);
             }
 
-            holder.txtLogEntry.setText(Html.fromHtml(mEntries.get(position)));
+            holder.mTxtLogEntry.setText(Html.fromHtml(mEntries.get(position)));
 
             return convertView;
         }
 
         private class LogViewHolder {
-            private final TextView txtLineNumber;
-            private final TextView txtLogEntry;
+            private final TextView mTxtLineNumber;
+            private final TextView mTxtLogEntry;
 
             LogViewHolder(View view) {
-                txtLineNumber = (TextView) view.findViewById(R.id.text_line);
-                txtLogEntry = (TextView) view.findViewById(R.id.text_log);
+                mTxtLineNumber = (TextView) view.findViewById(R.id.text_line);
+                mTxtLogEntry = (TextView) view.findViewById(R.id.text_log);
             }
         }
     }
@@ -135,14 +138,8 @@ public class AppLogViewerActivity extends ActionBarActivity {
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         super.onCreateOptionsMenu(menu);
-        // Copy to clipboard button
-        MenuItem item = menu.add(Menu.NONE, ID_COPY_TO_CLIPBOARD, Menu.NONE, android.R.string.copy);
-        item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-        item.setIcon(R.drawable.ic_action_copy_white_24dp);
-        // Share button
-        item = menu.add(Menu.NONE, ID_SHARE, Menu.NONE, R.string.reader_btn_share);
-        item.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-        item.setIcon(R.drawable.ic_share_white_24dp);
+        MenuInflater inflater = getMenuInflater();
+        inflater.inflate(R.menu.app_log_viewer_menu, menu);
         return true;
     }
 
@@ -152,10 +149,10 @@ public class AppLogViewerActivity extends ActionBarActivity {
             case android.R.id.home:
                 finish();
                 return true;
-            case ID_SHARE:
+            case R.id.app_log_share:
                 shareAppLog();
                 return true;
-            case ID_COPY_TO_CLIPBOARD:
+            case R.id.app_log_copy_to_clipboard:
                 copyAppLogToClipboard();
                 return true;
             default:

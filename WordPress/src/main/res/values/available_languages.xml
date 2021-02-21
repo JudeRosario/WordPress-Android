@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--Warning: Auto-generated file, don't edit it.-->
 <resources>
 <string-array name="available_languages" translatable="false">
 
 <item>
-en-us
+en_US
 </item>
 
 <item>
@@ -20,6 +21,14 @@ el
 
 <item>
 es
+</item>
+
+<item>
+es_MX
+</item>
+
+<item>
+es_CL
 </item>
 
 <item>
@@ -83,19 +92,19 @@ uz
 </item>
 
 <item>
-zh-cn
+zh_CN
 </item>
 
 <item>
-zh-tw
+zh_TW
 </item>
 
 <item>
-zh-tw
+zh_HK
 </item>
 
 <item>
-en-gb
+en_GB
 </item>
 
 <item>
@@ -111,7 +120,7 @@ he
 </item>
 
 <item>
-pt-br
+pt_BR
 </item>
 
 <item>
@@ -127,7 +136,71 @@ mk
 </item>
 
 <item>
-en-au
+en_AU
+</item>
+
+<item>
+sr
+</item>
+
+<item>
+sk
+</item>
+
+<item>
+cy
+</item>
+
+<item>
+da
+</item>
+
+<item>
+bg
+</item>
+
+<item>
+sq
+</item>
+
+<item>
+hr
+</item>
+
+<item>
+cs
+</item>
+
+<item>
+en_CA
+</item>
+
+<item>
+ms
+</item>
+
+<item>
+es_VE
+</item>
+
+<item>
+gl
+</item>
+
+<item>
+vi
+</item>
+
+<item>
+is
+</item>
+
+<item>
+es_CO
+</item>
+
+<item>
+kmr
 </item>
 
 </string-array>

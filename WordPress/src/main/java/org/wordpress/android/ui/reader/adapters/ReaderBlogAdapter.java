@@ -2,53 +2,74 @@ package org.wordpress.android.ui.reader.adapters;
 
 import android.content.Context;
 import android.os.AsyncTask;
-import android.support.v7.widget.RecyclerView;
+import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.recyclerview.widget.RecyclerView;
+
 import org.wordpress.android.R;
+import org.wordpress.android.WordPress;
 import org.wordpress.android.datasets.ReaderBlogTable;
 import org.wordpress.android.models.ReaderBlog;
 import org.wordpress.android.models.ReaderBlogList;
-import org.wordpress.android.models.ReaderRecommendBlogList;
-import org.wordpress.android.models.ReaderRecommendedBlog;
 import org.wordpress.android.ui.reader.ReaderInterfaces;
+import org.wordpress.android.ui.reader.actions.ReaderActions.ActionListener;
+import org.wordpress.android.ui.reader.actions.ReaderBlogActions;
+import org.wordpress.android.ui.reader.services.update.ReaderUpdateLogic.UpdateTask;
+import org.wordpress.android.ui.reader.services.update.ReaderUpdateServiceStarter;
+import org.wordpress.android.ui.reader.views.ReaderFollowButton;
 import org.wordpress.android.util.AppLog;
 import org.wordpress.android.util.AppLog.T;
+import org.wordpress.android.util.NetworkUtils;
 import org.wordpress.android.util.StringUtils;
+import org.wordpress.android.util.ToastUtils;
 import org.wordpress.android.util.UrlUtils;
-import org.wordpress.android.widgets.WPNetworkImageView;
+import org.wordpress.android.util.image.ImageManager;
+import org.wordpress.android.util.image.ImageType;
 
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumSet;
+import java.util.Locale;
+
+import javax.inject.Inject;
+
+import static android.view.View.VISIBLE;
 
 /*
- * adapter which shows either recommended or followed blogs - used by ReaderBlogFragment
+ * adapter which shows followed blogs - used by ReaderBlogFragment
  */
 public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
-
     private static final int VIEW_TYPE_ITEM = 0;
 
-    public enum ReaderBlogType {RECOMMENDED, FOLLOWED}
+    public enum ReaderBlogType {
+        FOLLOWED
+    }
 
     public interface BlogClickListener {
-        public void onBlogClicked(Object blog);
+        void onBlogClicked(Object blog);
     }
 
     private final ReaderBlogType mBlogType;
     private BlogClickListener mClickListener;
     private ReaderInterfaces.DataLoadedListener mDataLoadedListener;
 
-    private ReaderRecommendBlogList mRecommendedBlogs = new ReaderRecommendBlogList();
     private ReaderBlogList mFollowedBlogs = new ReaderBlogList();
 
-    @SuppressWarnings("UnusedParameters")
-    public ReaderBlogAdapter(Context context, ReaderBlogType blogType) {
+    private String mSearchFilter;
+
+    @Inject protected ImageManager mImageManager;
+
+    public ReaderBlogAdapter(Context context, ReaderBlogType blogType, String searchFilter) {
         super();
+        ((WordPress) context.getApplicationContext()).component().inject(this);
         setHasStableIds(false);
         mBlogType = blogType;
+        mSearchFilter = searchFilter;
     }
 
     public void setDataLoadedListener(ReaderInterfaces.DataLoadedListener listener) {
@@ -78,8 +99,6 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
     @Override
     public int getItemCount() {
         switch (getBlogType()) {
-            case RECOMMENDED:
-                return mRecommendedBlogs.size();
             case FOLLOWED:
                 return mFollowedBlogs.size();
             default:
@@ -101,7 +120,8 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
     public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
         switch (viewType) {
             case VIEW_TYPE_ITEM:
-                View itemView = LayoutInflater.from(parent.getContext()).inflate(R.layout.reader_listitem_blog, parent, false);
+                View itemView =
+                        LayoutInflater.from(parent.getContext()).inflate(R.layout.reader_listitem_blog, parent, false);
                 return new BlogViewHolder(itemView);
             default:
                 return null;
@@ -109,32 +129,30 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
     }
 
     @Override
-    public void onBindViewHolder(RecyclerView.ViewHolder holder, final int position) {
+    public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
         if (holder instanceof BlogViewHolder) {
             final BlogViewHolder blogHolder = (BlogViewHolder) holder;
             switch (getBlogType()) {
-                case RECOMMENDED:
-                    final ReaderRecommendedBlog blog = mRecommendedBlogs.get(position);
-                    blogHolder.txtTitle.setText(blog.getTitle());
-                    blogHolder.txtDescription.setText(blog.getReason());
-                    blogHolder.txtUrl.setText(UrlUtils.getDomainFromUrl(blog.getBlogUrl()));
-                    blogHolder.imgBlog.setErrorImageResId(R.drawable.blavatar_placeholder);
-                    blogHolder.imgBlog.setImageUrl(blog.getImageUrl(), WPNetworkImageView.ImageType.BLAVATAR);
-                    break;
-
                 case FOLLOWED:
                     final ReaderBlog blogInfo = mFollowedBlogs.get(position);
-                    String domain = UrlUtils.getDomainFromUrl(blogInfo.getUrl());
                     if (blogInfo.hasName()) {
-                        blogHolder.txtTitle.setText(blogInfo.getName());
+                        blogHolder.mTxtTitle.setText(blogInfo.getName());
                     } else {
-                        blogHolder.txtTitle.setText(domain);
+                        blogHolder.mTxtTitle.setText(R.string.reader_untitled_post);
                     }
-                    blogHolder.txtUrl.setText(domain);
-                    blogHolder.imgBlog.setErrorImageResId(blogInfo.isExternal() ?
-                            R.drawable.gravatar_placeholder :
-                            R.drawable.blavatar_placeholder);
-                    blogHolder.imgBlog.setImageUrl(blogInfo.getImageUrl(), WPNetworkImageView.ImageType.BLAVATAR);
+                    if (blogInfo.hasUrl()) {
+                        blogHolder.mTxtUrl.setText(UrlUtils.getHost(blogInfo.getUrl()));
+                    } else if (blogInfo.hasFeedUrl()) {
+                        blogHolder.mTxtUrl.setText(UrlUtils.getHost(blogInfo.getFeedUrl()));
+                    } else {
+                        blogHolder.mTxtUrl.setText("");
+                    }
+                    mImageManager.load(blogHolder.mImgBlog, ImageType.BLAVATAR, blogInfo.getImageUrl());
+                    blogHolder.mFollowButton.setIsFollowed(blogInfo.isFollowing);
+                    blogHolder.mFollowButton.setOnClickListener(v -> toggleFollow(
+                            blogHolder.itemView.getContext(),
+                            blogHolder.mFollowButton,
+                            blogInfo));
                     break;
             }
 
@@ -142,12 +160,13 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
                 blogHolder.itemView.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
+                        int clickedPosition = blogHolder.getAdapterPosition();
+                        if (clickedPosition == RecyclerView.NO_POSITION) {
+                            return;
+                        }
                         switch (getBlogType()) {
-                            case RECOMMENDED:
-                                mClickListener.onBlogClicked(mRecommendedBlogs.get(position));
-                                break;
                             case FOLLOWED:
-                                mClickListener.onBlogClicked(mFollowedBlogs.get(position));
+                                mClickListener.onBlogClicked(mFollowedBlogs.get(clickedPosition));
                                 break;
                         }
                     }
@@ -157,38 +176,71 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
     }
 
     /*
-     * holder used for followed/recommended blogs
+     * holder used for followed blogs
      */
     class BlogViewHolder extends RecyclerView.ViewHolder {
-        private final TextView txtTitle;
-        private final TextView txtDescription;
-        private final TextView txtUrl;
-        private final WPNetworkImageView imgBlog;
+        private final TextView mTxtTitle;
+        private final TextView mTxtUrl;
+        private final ImageView mImgBlog;
+        private final ReaderFollowButton mFollowButton;
 
-        public BlogViewHolder(View view) {
+        BlogViewHolder(View view) {
             super(view);
 
-            txtTitle = (TextView) view.findViewById(R.id.text_title);
-            txtDescription = (TextView) view.findViewById(R.id.text_description);
-            txtUrl = (TextView) view.findViewById(R.id.text_url);
-            imgBlog = (WPNetworkImageView) view.findViewById(R.id.image_blog);
+            mTxtTitle = view.findViewById(R.id.text_title);
+            mTxtUrl = view.findViewById(R.id.text_url);
+            mImgBlog = view.findViewById(R.id.image_blog);
+            mFollowButton = view.findViewById(R.id.follow_button);
 
-            // followed blogs don't have a description
             switch (getBlogType()) {
                 case FOLLOWED:
-                    txtDescription.setVisibility(View.GONE);
-                    break;
-                case RECOMMENDED:
-                    txtDescription.setVisibility(View.VISIBLE);
+                    mFollowButton.setVisibility(VISIBLE);
                     break;
             }
         }
     }
 
     private boolean mIsTaskRunning = false;
+
+    private void toggleFollow(Context context, ReaderFollowButton followButton, ReaderBlog blog) {
+        if (!NetworkUtils.checkConnection(context)) {
+            return;
+        }
+
+        final boolean isAskingToFollow = !blog.isFollowing;
+
+        // disable follow button until API call returns
+        followButton.setEnabled(false);
+
+        final ActionListener listener = succeeded -> {
+            followButton.setEnabled(true);
+            if (!succeeded) {
+                int errResId = isAskingToFollow ? R.string.reader_toast_err_follow_blog
+                        : R.string.reader_toast_err_unfollow_blog;
+                ToastUtils.showToast(context, errResId);
+                followButton.setIsFollowed(!isAskingToFollow);
+                blog.isFollowing = !isAskingToFollow;
+            } else {
+                ReaderUpdateServiceStarter.startService(followButton.getContext(), EnumSet.of(UpdateTask.TAGS));
+            }
+        };
+
+        final boolean result;
+
+        if (blog.feedId != 0) {
+            result = ReaderBlogActions.followFeedById(blog.feedId, isAskingToFollow, listener);
+        } else {
+            result = ReaderBlogActions.followBlogById(blog.blogId, isAskingToFollow, listener);
+        }
+
+        if (result) {
+            followButton.setIsFollowed(isAskingToFollow);
+            blog.isFollowing = isAskingToFollow;
+        }
+    }
+
     private class LoadBlogsTask extends AsyncTask<Void, Void, Boolean> {
-        ReaderRecommendBlogList tmpRecommendedBlogs;
-        ReaderBlogList tmpFollowedBlogs;
+        private ReaderBlogList mTmpFollowedBlogs;
 
         @Override
         protected void onPreExecute() {
@@ -203,13 +255,31 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
         @Override
         protected Boolean doInBackground(Void... params) {
             switch (getBlogType()) {
-                case RECOMMENDED:
-                    tmpRecommendedBlogs = ReaderBlogTable.getRecommendedBlogs();
-                    return !mRecommendedBlogs.isSameList(tmpRecommendedBlogs);
-
                 case FOLLOWED:
-                    tmpFollowedBlogs = ReaderBlogTable.getFollowedBlogs();
-                    return !mFollowedBlogs.isSameList(tmpFollowedBlogs);
+                    mTmpFollowedBlogs = new ReaderBlogList();
+                    ReaderBlogList allFollowedBlogs = ReaderBlogTable.getFollowedBlogs();
+                    if (hasSearchFilter()) {
+                        String query = mSearchFilter.toLowerCase(Locale.getDefault());
+                        for (ReaderBlog blog : allFollowedBlogs) {
+                            if (blog.getName().toLowerCase(Locale.getDefault()).contains(query)) {
+                                mTmpFollowedBlogs.add(blog);
+                            } else if (UrlUtils.getHost(blog.getUrl()).toLowerCase(Locale.ROOT).contains(query)) {
+                                mTmpFollowedBlogs.add(blog);
+                            }
+                        }
+                    } else {
+                        mTmpFollowedBlogs.addAll(allFollowedBlogs);
+                    }
+                    // sort followed blogs by name/domain to match display
+                    Collections.sort(mTmpFollowedBlogs, new Comparator<ReaderBlog>() {
+                        @Override
+                        public int compare(ReaderBlog thisBlog, ReaderBlog thatBlog) {
+                            String thisName = getBlogNameForComparison(thisBlog);
+                            String thatName = getBlogNameForComparison(thatBlog);
+                            return thisName.compareToIgnoreCase(thatName);
+                        }
+                    });
+                    return !mFollowedBlogs.isSameList(mTmpFollowedBlogs);
 
                 default:
                     return false;
@@ -220,20 +290,8 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
         protected void onPostExecute(Boolean result) {
             if (result) {
                 switch (getBlogType()) {
-                    case RECOMMENDED:
-                        mRecommendedBlogs = (ReaderRecommendBlogList) tmpRecommendedBlogs.clone();
-                        break;
                     case FOLLOWED:
-                        mFollowedBlogs = (ReaderBlogList) tmpFollowedBlogs.clone();
-                        // sort followed blogs by name/domain to match display
-                        Collections.sort(mFollowedBlogs, new Comparator<ReaderBlog>() {
-                            @Override
-                            public int compare(ReaderBlog thisBlog, ReaderBlog thatBlog) {
-                                String thisName = getBlogNameForComparison(thisBlog);
-                                String thatName = getBlogNameForComparison(thatBlog);
-                                return thisName.compareToIgnoreCase(thatName);
-                            }
-                        });
+                        mFollowedBlogs = (ReaderBlogList) mTmpFollowedBlogs.clone();
                         break;
                 }
                 notifyDataSetChanged();
@@ -252,10 +310,28 @@ public class ReaderBlogAdapter extends RecyclerView.Adapter<RecyclerView.ViewHol
             } else if (blog.hasName()) {
                 return blog.getName();
             } else if (blog.hasUrl()) {
-                return StringUtils.notNullStr(UrlUtils.getDomainFromUrl(blog.getUrl()));
+                return StringUtils.notNullStr(UrlUtils.getHost(blog.getUrl()));
             } else {
                 return "";
             }
         }
+    }
+
+    public String getSearchFilter() {
+        return mSearchFilter;
+    }
+
+    /*
+     * filters the list of followed sites - pass null to show all
+     */
+    public void setSearchFilter(String constraint) {
+        if (!StringUtils.equals(constraint, mSearchFilter)) {
+            mSearchFilter = constraint;
+            refresh();
+        }
+    }
+
+    public boolean hasSearchFilter() {
+        return !TextUtils.isEmpty(mSearchFilter);
     }
 }
